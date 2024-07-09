@@ -2,16 +2,26 @@
 #include "Seeed_BMP280.h"
 #include <Wire.h>
 #include <ArduinoMqttClient.h>
+#include <ArduinoJson.h>
+#include <TimeLib.h>
 #include <WiFiNINA.h>
 #include "arduino_secrets.h"
+
 #define DHTPIN 2
 #define DHTTYPE DHT22
+#define DEBUG true
 
 BMP280 bmp280;
 DHT dht(DHTPIN, DHTTYPE);
 
 WiFiClient wifiClient;
 MqttClient mqttClient(wifiClient);
+
+const int BACKOFF_IN_MILLIS = 5000;
+const long MILLIS_IN_SECONDS = 1000;
+const long SECONDS_IN_MINUTE = 60;
+const long DATA_INTERVAL_IN_MIN = 5;
+const int TIME_LEN = 24;
 
 const char ssid[] = NETWORK_SSID;
 const char network_pass[] = NETWORK_PASSWORD;
@@ -23,6 +33,28 @@ const char topic[]  = "weather";
 const char client_id[] = "arduino1";
 
 int count = 0;
+bool sentMessage = false;
+JsonDocument sensorMetadata;
+
+struct WeatherData {
+  char time[TIME_LEN];
+  float temperature;
+  float pressure;
+  float humidity;
+  float windSpeed;
+  char windDirection[2];
+  float luminosity;
+  float uvIndex;
+};
+
+time_t getTime() {
+  time_t timeInSeconds = WiFi.getTime();
+  while (timeInSeconds == 0) {
+    Serial.println("Date time not yet initalized, sleeping.");
+    delay(BACKOFF_IN_MILLIS);
+    timeInSeconds = WiFi.getTime();
+  }
+};
 
 void setup() {
   Serial.begin(9600);
@@ -37,7 +69,7 @@ void setup() {
   while (WiFi.begin(ssid, network_pass) != WL_CONNECTED) {
     // failed, retry
     Serial.print(".");
-    delay(5000);
+    delay(BACKOFF_IN_MILLIS);
   }
   Serial.println("You're connected to the network");
 
@@ -56,92 +88,84 @@ void setup() {
 
     while (1);
   }
-
   Serial.println("You're connected to the MQTT broker!");
-  Serial.println();
-}
 
-bool sentMessage = false;
+  sensorMetadata["sensorId"] = client_id;
+  sensorMetadata["location"] = "greenhouse";
+  sensorMetadata["tags"][0] = "test";
+
+  setSyncProvider(getTime);
+  setSyncInterval(300);
+  Serial.println("Done with setup!");
+  Serial.println();
+};
 
 void loop() {
   if (!sentMessage) {
-    tempHumidity();
-    tempPressure();
-    mqqt();
-    sentMessage = true;
+    WeatherData * weatherData = (WeatherData *) malloc (sizeof(struct WeatherData));
+    getWeatherData(weatherData);
+    setTime(weatherData);
+    sendData(weatherData);
+    free(weatherData);
+    //sentMessage = true;
   }
 
   // Wait some time between measurements.
-  delay(10000);
+  if (DEBUG) {
+    Serial.print("Waiting ");
+    Serial.print(MILLIS_IN_SECONDS * SECONDS_IN_MINUTE * DATA_INTERVAL_IN_MIN);
+    Serial.println(" milliseconds before sending more data");
+  }
+  delay(MILLIS_IN_SECONDS * SECONDS_IN_MINUTE * DATA_INTERVAL_IN_MIN);
 }
 
+void getWeatherData(WeatherData * data) {
+  float humidity  = dht.readHumidity();           // In percent
+  float temperature = dht.readTemperature();      // In celsius
+  // check if any reads failed 
+  if (isnan(humidity) || isnan(temperature)) {
+    Serial.println("Failed to read from DHT sensor!");
+  }
+  data->temperature = temperature;
+  data->humidity = humidity;
+  
+  float pressure = bmp280.getPressure();          // In pascals
+  float bmpTemperature = bmp280.getTemperature(); // In celsius
+  // check if any reads failed
+  if (isnan(pressure) || isnan(bmpTemperature)) {
+    Serial.println("Failed to read from BMP sensor!");
+  }
+  data->pressure = pressure * 0.01;                // Convert pascals to millibars
 
-void mqqt() {
+  return data;
+}
+
+void setTime(WeatherData * data) {
+  // 2024-07-09T17:48:47.043Z
+  sprintf(data->time, "%d-%02d-%02dT%02d:%02d:%02d.000Z", year(), month(), day(), hour(), minute(), second());
+  Serial.println(data->time);
+}
+
+void sendData(WeatherData * data) {
   // call poll() regularly to allow the library to send MQTT keep alive which
   // avoids being disconnected by the broker
   mqttClient.poll();
 
-  int Rvalue = analogRead(A2);
+  JsonDocument weatherData;
+  weatherData["sensorMetadata"] = sensorMetadata;
+  weatherData["time"] = data->time;
+  weatherData["humidity"] = data->humidity;
+  weatherData["pressure"] = data->pressure;
+  weatherData["temperature"] = data->temperature;
 
-  Serial.print("Sending message to topic: ");
-  Serial.println(topic);
-  Serial.println(Rvalue);
-
-  // send message, the Print interface can be used to set the message contents
-  mqttClient.beginMessage(topic);
-  mqttClient.print(Rvalue);
-  mqttClient.endMessage();
-
-  Serial.println();
-}
-
-void tempPressure() {
-  float pressure;
-
-  //get and print temperatures
-  Serial.print("GROVE BMP280:: Temp: ");
-  Serial.print(bmp280.getTemperature());
-  Serial.print("C"); // The unit for  Celsius because original arduino don't support speical symbols
-
-  Serial.print("  |  "); 
-
-  //get and print atmospheric pressure data
-  Serial.print("Pressure: ");
-  Serial.print(pressure = bmp280.getPressure());
-  Serial.print("Pa");
-
-  Serial.print("  |  "); 
-
-  //get and print altitude data
-  Serial.print("Altitude: ");
-  Serial.print(bmp280.calcAltitude(pressure));
-  Serial.println("m");
-
-  Serial.println("\n");//add a line between output of different times.
-}
-
-void tempHumidity() {
-  // read humidity
-  float humi  = dht.readHumidity();
-  // read temperature as Celsius
-  float tempC = dht.readTemperature();
-  // read temperature as Fahrenheit
-  float tempF = dht.readTemperature(true);
-
-  // check if any reads failed
-  if (isnan(humi) || isnan(tempC) || isnan(tempF)) {
-    Serial.println("Failed to read from DHT sensor!");
-  } else {
-    Serial.print("DHT 22:: Humidity: ");
-    Serial.print(humi);
-    Serial.print("%");
-
-    Serial.print("  |  "); 
-
-    Serial.print("Temperature: ");
-    Serial.print(tempC);
-    Serial.print("°C ~ ");
-    Serial.print(tempF);
-    Serial.println("°F");
+  if (DEBUG) {
+    Serial.print("Sending message to topic: ");
+    Serial.println(topic);
+    serializeJsonPretty(weatherData, Serial);
+    Serial.println();
   }
+
+  mqttClient.beginMessage(topic, (unsigned long)measureJson(weatherData));
+  serializeJson(weatherData, mqttClient);
+  mqttClient.endMessage();
 }
