@@ -29,7 +29,7 @@ const char ssid[] = NETWORK_SSID;
 const char network_pass[] = NETWORK_PASSWORD;
 const char mqtt_username[] = MQTT_USERNAME;
 const char mqtt_password[] = MQTT_PASSWORD;
-const char broker[] = "192.168.86.15";
+const char broker[] = "192.168.86.248";
 const int  port     = 1883;
 const char topic[]  = "weather";
 const char client_id[] = "arduino1";
@@ -147,6 +147,7 @@ bool connectToBroker() {
   mqttClient.setId(client_id);
   mqttClient.setUsernamePassword(mqtt_username, mqtt_password);
   if (!mqttClient.connect(broker, port)) {
+    // Error codes https://github.com/arduino-libraries/ArduinoMqttClient/blob/master/src/MqttClient.h
     Serial.print("MQTT connection failed! Error code = ");
     int connect_error = mqttClient.connectError();
     Serial.println(connect_error);
