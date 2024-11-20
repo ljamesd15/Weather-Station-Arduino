@@ -1,7 +1,7 @@
 # Based off https://github.com/microsoft/WSL/issues/4150#issuecomment-1018524753
 
 # Variables
-$localPorts=@(443,1883,8080,8883);
+$localPorts=@(443,1883,5672,8080,8081,8883);
 $remoteAddress = Invoke-Expression "wsl -d 'Ubuntu-24.04' hostname -I";
 $firewallName = 'WSL Port Forwarding'
 $localAddress='0.0.0.0';
