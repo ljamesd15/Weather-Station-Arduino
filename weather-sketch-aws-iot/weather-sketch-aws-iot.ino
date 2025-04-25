@@ -10,7 +10,7 @@
 
 #define DHTPIN 2
 #define DHTTYPE DHT22
-#define DEBUG true
+#define DEBUG false
 
 const unsigned long MAX_UNSIGNED_LONG = 4294967295;
 const int BACKOFF_IN_MILLIS = 5000;
@@ -48,7 +48,7 @@ struct WeatherData {
   char time[TIME_FIELD_LENGTH];
   float temperature;
   float pressure;
-  float humidity;
+  //float humidity;
   float windSpeed;
   char windDirection[2];
   float luminosity;
@@ -56,25 +56,27 @@ struct WeatherData {
 };
 
 void setup() {
-  // Start and wait for serial to begin
-  Serial.begin(9600);
-  while(!Serial) {
-    delay(1000);
-  }
-  delay(1000);
-  Serial.println();
-  Serial.println();
-  Serial.println("Starting setup");
+  if (DEBUG) {
+    // Start and wait for serial to begin
+    Serial.begin(9600);
+    while(!Serial) {
+      delay(1000);
+    }
+    Serial.println();
+    Serial.println();
+    Serial.println("Starting setup");
 
-  Serial.print("Attempting to connect to WPA SSID: ");
-  Serial.println(ssid);
+    Serial.print("Attempting to connect to WPA SSID: ");
+    Serial.println(ssid);
+  }
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, network_pass);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
-    Serial.print(".");
   }
-  Serial.println("Connected to the network");
+  if (DEBUG) {
+    Serial.println("Connected to the network");
+  }
 
   // Configure WiFiClientSecure to use the AWS IoT device credentials
   wifiClient.setCACert(AWS_CERT_CA);
@@ -86,14 +88,9 @@ void setup() {
   sensorMetadata["location"] = location;
   sensorMetadata["tags"][0] = "test";
 
-  // // Setup sensors
-  if (!bmp280.init()) {
-    Serial.println("Device error!");
-  }
-  dht.begin(); // Initialize the DHT sensor
-
-  Serial.println("Done with setup!");
-  Serial.println();
+  // Setup sensors
+  bmp280.init();
+  dht.begin();
 };
 
 void loop() {
@@ -117,7 +114,6 @@ void syncClock(unsigned long currentTime) {
   }
 
   if (timeSinceLastClockSync > TIME_SYNC_INTERVAL_IN_MILLIS) {
-    Serial.println("Syncing time");
     configTime(0, 0, ntpServer1, ntpServer2);
     timeOfLastClockSync = currentTime;
     delay(BACKOFF_IN_MILLIS);
@@ -143,7 +139,7 @@ void sendData(unsigned long currentTime) {
   if (timeSinceLastMessage > DATA_INTERVAL_IN_MILLIS) {
     bool connected = connectToAwsIot();
     if (connected) {
-      WeatherData * weatherData = (WeatherData *) malloc (sizeof(struct WeatherData));
+      WeatherData * weatherData = (WeatherData *) calloc(1, sizeof(struct WeatherData));
       getWeatherData(weatherData);
       publishMessage(weatherData);
       free(weatherData);
@@ -153,8 +149,6 @@ void sendData(unsigned long currentTime) {
         Serial.print("Sent message at ");
         Serial.println(timeOfLastMessage);
       }
-    } else {
-      Serial.print("Failed to connect to broker, will retry");
     }
   } else if (DEBUG) {
     Serial.print("Skipping message because time since last message is ");
@@ -169,18 +163,18 @@ void sendData(unsigned long currentTime) {
 bool connectToAwsIot() {
   mqttClient.begin(broker, port, wifiClient);
 
-  Serial.print("Connecting to AWS IOT");
+  if (DEBUG) {
+    Serial.print("Connecting to AWS IOT");
+  }
   while (!mqttClient.connect(client_id)) {
-    Serial.print(".");
     delay(100);
   }
-  Serial.println();
 
   if (!mqttClient.connected()) {
-    Serial.println("AWS IoT Timeout!");
     return false;
+  } else if (DEBUG) {
+    Serial.println("AWS IoT Connected!");
   }
-  Serial.println("AWS IoT Connected!");
   return true;
 }
 
@@ -196,28 +190,39 @@ void getWeatherData(WeatherData * data) {
     int year = timeInfo.tm_year + 1900; // The year in timeInfo is time since 1900
     int month = timeInfo.tm_mon + 1; // The month in timeInfo is months since January (0 indexed)
     sprintf(data->time, "%d-%02d-%02dT%02d:%02d:%02d.000Z", year, month, timeInfo.tm_mday, timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
-    Serial.println(data->time);
-    Serial.println(&timeInfo, "%A, %B %d %Y %H:%M:%S");
-  } else {
-    Serial.println("Failed to obtain time");
+    if (DEBUG) {
+      Serial.println(data->time);
+      Serial.println(&timeInfo, "%A, %B %d %Y %H:%M:%S");
+    }
   }
 
   // Fill out sensor data
   float humidity  = dht.readHumidity();           // In percent
   float temperature = dht.readTemperature();      // In celsius
-  // check if any reads failed 
-  if (isnan(humidity) || isnan(temperature)) {
-    Serial.println("Failed to read from DHT sensor!");
-  } else {
+  if (!isnan(humidity)) {
+    //data->humidity = humidity;
+  } else if (DEBUG) {
+    Serial.println("Unable to get humidity reading from DHT sensor");
+  }
+
+  if (!isnan(temperature)) {
     data->temperature = temperature;
-    data->humidity = humidity;
+  } else {
+    if (DEBUG) {
+      Serial.println("Unable to get temperature reading from DHT sensor");
+    }
+    // Try and get it from BMP280 (slightly less exact on readings)
+    float bmpTemperature = bmp280.getTemperature();
+    if (!isnan(bmpTemperature)) {
+      data->temperature = bmpTemperature;         // In celsius
+    } else if (DEBUG) {
+      Serial.println("Unable to get temperature reading from BMP sensor");
+    }
   }
   
   float pressure = bmp280.getPressure();          // In pascals
   // check if any reads failed
-  if (isnan(pressure)) {
-    Serial.println("Failed to read from BMP sensor!");
-  } else {
+  if (!isnan(pressure)) {
     data->pressure = pressure * 0.01;             // Convert pascals to millibars
   }
 
@@ -231,7 +236,7 @@ void publishMessage(WeatherData * data) {
   JsonDocument weatherData;
   weatherData["sensorMetadata"] = sensorMetadata;
   weatherData["time"] = data->time;
-  weatherData["humidity"] = data->humidity;
+  //weatherData["humidity"] = data->humidity;
   weatherData["pressure"] = data->pressure;
   weatherData["temperature"] = data->temperature;
 
